@@ -12,6 +12,7 @@ const number = id => 'FP-' + String(id).padStart(6, '0');
 const publicUrl = new URL(process.env.PUBLIC_URL || 'http://localhost:3000');
 const salon = process.env.SALON_NAME || 'FichaPro';
 const password = process.env.ADMIN_PASSWORD || '';
+const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
 if (process.env.NODE_ENV === 'production' && (publicUrl.protocol !== 'https:' || password.length < 12)) {
   throw new Error('Em produção, configure PUBLIC_URL com HTTPS e ADMIN_PASSWORD com pelo menos 12 caracteres.');
 }
@@ -31,6 +32,12 @@ db.exec(`
     issued INTEGER NOT NULL, digest TEXT NOT NULL, pdf BLOB NOT NULL, replaced INTEGER
   );
   CREATE UNIQUE INDEX IF NOT EXISTS active_document ON documents(form_id) WHERE replaced IS NULL;
+  CREATE TABLE IF NOT EXISTS clients (
+    phone TEXT PRIMARY KEY, name TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS invitations (
+    form_id INTEGER PRIMARY KEY REFERENCES forms(id), phone TEXT REFERENCES clients(phone), procedure TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, expires INTEGER NOT NULL);
 `);
 const get = (sql, ...args) => db.prepare(sql).get(...args);
@@ -41,6 +48,12 @@ const assets = new Map([
   ['/style.css', ['public/style.css', 'text/css']],
   ['/marca.svg', ['design/marca/logo-claro.svg', 'image/svg+xml']]
 ]);
+// A lista de ícones é explícita para manter o servidor fora da árvore de arquivos privados.
+for (const icon of ['adicionar','avancar','cliente','clientes','configuracoes','documentos','ficha','fotos','historico','inicio','pdf','pesquisa','qr-code','validacao','voltar']) {
+  assets.set('/icones/' + icon + '.svg', ['design/icones/' + icon + '.svg', 'image/svg+xml']);
+}
+assets.set('/ui.js', ['public/ui.js', 'text/javascript']);
+assets.set('/painel.js', ['public/painel.js', 'text/javascript']);
 const fail = (status, message) => Object.assign(new Error(message), { status });
 
 async function body(req, limit = 32_000) {
@@ -95,7 +108,11 @@ async function route(req, res) {
   const { pathname: url } = new URL(req.url, publicUrl);
   const method = req.method;
   const session = req.headers.cookie?.match(/(?:^|; )fp=([\w-]+)/)?.[1];
-  const sameOrigin = req.headers.origin === publicUrl.origin;
+  // Referrer-Policy pode fazer o navegador enviar Origin: null.
+  // Fetch Metadata é controlado pelo navegador e confirma a origem neste caso.
+  const origin = req.headers.origin;
+  const sameOrigin = origin === publicUrl.origin ||
+    ((!origin || origin === 'null') && req.headers['sec-fetch-site'] === 'same-origin');
   const json = (data, status = 200) => {
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify(data));
@@ -118,8 +135,10 @@ async function route(req, res) {
     loginLimit(req.socket.remoteAddress);
     const data = await body(req);
     if (password.length < 12) throw fail(503, 'O acesso do salão ainda precisa ser configurado.');
-    if (!timingSafeEqual(Buffer.from(hash(field(data.password, 256))), Buffer.from(hash(password)))) {
-      throw fail(401, 'Senha incorreta.');
+    const passwordMatches = timingSafeEqual(Buffer.from(hash(field(data.password, 256))), Buffer.from(hash(password)));
+    const emailMatches = !adminEmail || field(data.email ?? '', 254).toLowerCase() === adminEmail;
+    if (!passwordMatches || !emailMatches) {
+      throw fail(401, 'E-mail ou senha incorretos.');
     }
     attempts.delete(req.socket.remoteAddress);
     const id = token();
@@ -133,13 +152,13 @@ async function route(req, res) {
   if (pre) {
     const form = get('SELECT id, expires, submitted, notification FROM forms WHERE link=?', hash(pre[1]));
     if (!form || form.expires < Date.now()) throw fail(404, 'Link inválido ou expirado. Peça outro ao salão.');
-    if (method === 'GET') return json({ salon, submitted: Boolean(form.submitted), number: form.submitted ? number(form.id) : null });
+    if (method === 'GET') return json({ salon, submitted: Boolean(form.submitted), number: form.submitted ? number(form.id) : null, procedure: get('SELECT procedure FROM invitations WHERE form_id=?', form.id)?.procedure ?? '' });
     if (method === 'POST') {
       if (form.submitted) return json({ number: number(form.id), notification: form.notification });
       const data = await body(req);
       const customer = {
         name: field(data.name, 120, true), phone: field(data.phone, 25, true).replace(/\D/g, ''),
-        procedure: field(data.procedure, 150, true), chemical: field(data.chemical, 20, true),
+        procedure: get('SELECT procedure FROM invitations WHERE form_id=?', form.id)?.procedure || field(data.procedure, 150, true), chemical: field(data.chemical, 20, true),
         details: field(data.details, 1200), reaction: field(data.reaction, 1200), notes: field(data.notes, 1200)
       };
       if (!/^(55)?\d{10,11}$/.test(customer.phone) || !['Sim','Não','Não sei'].includes(customer.chemical)) {
@@ -168,14 +187,54 @@ async function route(req, res) {
     res.setHeader('Set-Cookie', `fp=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure}`);
     return json({});
   }
+  if (method === 'POST' && url === '/api/clients') {
+    const data = await body(req);
+    const name = field(data.name, 120, true);
+    const phone = field(data.phone, 25, true).replace(/\D/g, '').replace(/^55(?=\d{10,11}$)/, '');
+    if (!/^\d{10,11}$/.test(phone)) throw fail(400, 'Informe o WhatsApp com DDD.');
+    if (!run('INSERT OR IGNORE INTO clients VALUES (?,?)', phone, name).changes) {
+      throw fail(409, 'Já existe uma cliente com esse telefone.');
+    }
+    return json({ name, phone }, 201);
+  }
   if (method === 'POST' && url === '/api/links') {
+    const data = await body(req);
     const link = token();
-    const result = run('INSERT INTO forms(link,expires) VALUES (?,?)', hash(link), Date.now() + 7 * 86_400_000);
-    return json({ number: number(result.lastInsertRowid), link: new URL('/pre/' + link, publicUrl).href }, 201);
+    const procedure = field(data.procedure ?? '', 150);
+    const phone = field(data.phone ?? '', 25);
+    if (phone && !get('SELECT 1 FROM clients WHERE phone=?', phone)) throw fail(404, 'Cliente não encontrada.');
+    db.exec('BEGIN');
+    try {
+      const result = run('INSERT INTO forms(link,expires) VALUES (?,?)', hash(link), Date.now() + 7 * 86_400_000);
+      run('INSERT INTO invitations VALUES (?,?,?)', result.lastInsertRowid, phone || null, procedure);
+      db.exec('COMMIT');
+      return json({ number: number(result.lastInsertRowid), link: new URL('/pre/' + link, publicUrl).href }, 201);
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
   }
   if (method === 'GET' && url === '/api/forms') {
-    const forms = all('SELECT id,customer,notification FROM forms WHERE submitted IS NOT NULL ORDER BY id DESC');
-    return json({ salon, forms: forms.map(row => ({ id: row.id, number: number(row.id), name: JSON.parse(row.customer).name, notification: row.notification })) });
+    const forms = all('SELECT id,customer,submitted,notification FROM forms WHERE submitted IS NOT NULL ORDER BY id DESC');
+    return json({ salon, clients: all('SELECT name,phone FROM clients ORDER BY name'),
+      pending: all(`SELECT forms.id, clients.name, invitations.procedure, forms.expires
+        FROM forms LEFT JOIN invitations ON invitations.form_id=forms.id
+        LEFT JOIN clients ON clients.phone=invitations.phone
+        WHERE forms.submitted IS NULL AND forms.expires>? ORDER BY forms.id DESC`, Date.now())
+        .map(row => ({ ...row, number: number(row.id) })),
+      forms: forms.map(row => ({ name: JSON.parse(row.customer).name, phone: JSON.parse(row.customer).phone, procedure: JSON.parse(row.customer).procedure, id: row.id, number: number(row.id),
+        submitted: row.submitted, notification: row.notification })),
+      documents: all(`SELECT documents.code, documents.form_id, documents.issued, documents.replaced, forms.customer
+        FROM documents JOIN forms ON forms.id=documents.form_id ORDER BY documents.issued DESC`)
+        .map(row => ({ code: row.code, id: row.form_id, number: number(row.form_id),
+          issued: row.issued, replaced: Boolean(row.replaced), name: JSON.parse(row.customer).name })) });
+  }
+  const download = url.match(/^\/api\/documents\/([\w-]{32})\/pdf$/);
+  if (method === 'GET' && download) {
+    const doc = get('SELECT form_id,pdf FROM documents WHERE code=?', download[1]);
+    if (!doc) throw fail(404, 'Documento não encontrado.');
+    res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="${number(doc.form_id)}.pdf"` });
+    return res.end(Buffer.from(doc.pdf));
   }
   const formRoute = url.match(/^\/api\/forms\/(\d+)(?:\/(pdf|emitir))?$/);
   if (formRoute) {

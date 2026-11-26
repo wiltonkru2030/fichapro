@@ -7,6 +7,7 @@ RUN npm ci --omit=dev
 COPY server ./server
 COPY public ./public
 COPY design/marca/logo-claro.svg ./design/marca/logo-claro.svg
+COPY design/icones ./design/icones
 RUN install -d -m 0700 -o node -g node /app/data
 
 ENV NODE_ENV=production DB_PATH=/app/data/fichapro.sqlite

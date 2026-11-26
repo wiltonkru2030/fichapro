@@ -1,34 +1,8 @@
-const app = document.querySelector('#app');
-const message = document.querySelector('#message');
-const escape = value => String(value ?? '').replace(/[&<>"']/g, char =>
-  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
-const byId = id => document.getElementById(id);
+import { app, message, byId, escape, api, action, formData, icon } from './ui.js';
+import { createDashboard } from './painel.js';
+
 const assessmentFields = ['Couro cabeludo', 'Condição dos fios', 'Teste de mecha', 'Produtos e fórmula', 'Orientações'];
 const labels = { name: 'Nome', phone: 'WhatsApp', procedure: 'Procedimento', chemical: 'Química recente', details: 'Histórico de química', reaction: 'Reações relatadas', notes: 'Observações' };
-const notifications = { aceito: 'Aviso aceito pelo WhatsApp', sem_integracao: 'WhatsApp ainda sem integração', incerto: 'Envio sem confirmação', rejeitado: 'Aviso recusado pelo WhatsApp', em_envio: 'Aviso em processamento' };
-
-async function api(path, payload) {
-  const response = await fetch('/api' + path, payload === undefined ? {} : {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
-  });
-  const data = await response.json();
-  if (!response.ok) throw Object.assign(new Error(data.error), { status: response.status });
-  return data;
-}
-
-// Mantém o formulário disponível em caso de falha e bloqueia cliques repetidos.
-function action(element, event, callback) {
-  element.addEventListener(event, async e => {
-    e.preventDefault();
-    const button = e.submitter || (element instanceof HTMLButtonElement ? element : null);
-    if (button) button.disabled = true;
-    message.textContent = '';
-    try { await callback(e); }
-    catch (error) { message.textContent = error.message || 'Tente novamente.'; }
-    finally { if (button) button.disabled = false; }
-  });
-}
-const formData = form => Object.fromEntries(new FormData(form));
 const input = (name, label, value = '') => `<label>${escape(label)}<input name="${name}" value="${escape(value)}" maxlength="150" required></label>`;
 const area = (name, label, value = '', limit = 1400) =>
   `<label>${escape(label)}<textarea name="${escape(name)}" maxlength="${limit}">${escape(value)}</textarea></label>`;
@@ -46,7 +20,7 @@ async function prefill(path) {
     <form id="pre">
       ${input('name', 'Seu nome')}
       <label>WhatsApp com DDD<input name="phone" type="tel" autocomplete="tel" maxlength="25" required></label>
-      ${input('procedure', 'Qual procedimento você deseja?')}
+      ${data.procedure ? `<p class="badge">${escape(data.procedure)}</p>` : input('procedure', 'Qual procedimento você deseja?')}
       <label>Fez química nos últimos meses?<select name="chemical" required>
         <option value="">Selecione</option><option>Sim</option><option>Não</option><option>Não sei</option>
       </select></label>
@@ -62,7 +36,7 @@ async function prefill(path) {
   action(form, 'submit', async () => {
     const payload = formData(form);
     if (payload.chemical !== 'Sim') payload.details = '';
-    const result = await api(path, payload);
+    const result = await api(path, { ...payload, procedure: data.procedure || payload.procedure });
     showComplete(result.number);
   });
 }
@@ -132,15 +106,15 @@ async function compress(file) {
   } finally { bitmap.close(); }
 }
 
-async function openForm(id) {
+async function openForm(id, { repaint = dashboard, target = app } = {}) {
   const endpoint = '/forms/' + id;
   const data = await api(endpoint);
   const customer = Object.fromEntries(Object.entries(data.customer).map(([key, value]) => [labels[key], value]));
-  app.innerHTML = `<button id="back">Voltar</button><h1>Ficha da cliente</h1>
+  target.innerHTML = `<button id="back" class="back">${icon('voltar')} Voltar</button><h1>Ficha da cliente</h1>
     <p class="badge">${escape(data.number)} · ${data.issued ? 'PDF emitido' : 'Pré-ficha recebida'}</p>
     <details class="card" open><summary>Respostas da cliente</summary>${summary(customer)}</details>
     ${data.issued ? `<section><a class="button primary" href="/api${endpoint}/pdf">Baixar PDF</a></section>` : ''}
-    <form id="assessment">
+    <form id="assessment" class="card work-form">
       <h2>Avaliação profissional</h2>
       ${assessmentFields.map(label => area(label, label, data.assessment[label])).join('')}
       <button id="draft" type="button">Salvar avaliação</button>
@@ -156,7 +130,7 @@ async function openForm(id) {
       ${data.issued ? '<label class="check"><input name="replace" type="checkbox" required> Confirmo a substituição do documento anterior.</label>' : ''}
       <button class="primary">${data.issued ? 'Assinar e emitir nova versão' : 'Assinar e emitir PDF'}</button>
     </form>`;
-  action(byId('back'), 'click', dashboard);
+  action(byId('back'), 'click', repaint);
   const form = byId('assessment');
   const signature = sign(byId('signature'));
   const assessment = () => Object.fromEntries(assessmentFields.map(name => [name, form.elements[name].value]));
@@ -187,56 +161,13 @@ async function openForm(id) {
     const values = formData(form);
     await api(endpoint + '/emitir', { assessment: assessment(), photos, signature: signature(), terms: values.terms,
       publicity: Boolean(values.publicity), replace: Boolean(values.replace), version: data.version });
-    await openForm(id);
+    await openForm(id, { repaint, target });
     message.textContent = 'PDF emitido. A cópia está disponível para baixar.';
     window.scrollTo(0, 0);
   });
 }
 
-async function dashboard() {
-  let data;
-  try { data = await api('/forms'); }
-  catch (error) {
-    if (error.status !== 401) throw error;
-    app.innerHTML = `<h1>Entrar no FichaPro</h1><form id="login">
-      <label>Senha do salão<input name="password" type="password" autocomplete="current-password" required></label>
-      <button class="primary">Entrar</button></form>`;
-    action(byId('login'), 'submit', async e => { await api('/login', formData(e.currentTarget)); await dashboard(); });
-    return;
-  }
-  app.innerHTML = `<h1>Atendimentos</h1><p>${escape(data.salon)}</p>
-    <div class="row"><button id="new" class="primary">Gerar link de pré-cadastro</button><button id="logout">Sair</button></div>
-    <section id="link"></section><label>Buscar cliente ou ficha<input id="search" type="search"></label>
-    <section id="list"></section>`;
-  const list = () => {
-    const query = byId('search').value.trim().toLocaleLowerCase('pt-BR');
-    const matching = data.forms.filter(form => (form.name + ' ' + form.number).toLocaleLowerCase('pt-BR').includes(query));
-    byId('list').innerHTML = matching.map(form => `<button data-id="${form.id}">${escape(form.name)} · ${escape(form.number)}
-      <br><small>${escape(notifications[form.notification] || '')}</small></button>`).join('') || '<p>Nenhuma ficha encontrada.</p>';
-    byId('list').querySelectorAll('button').forEach(button => action(button, 'click', () => openForm(Number(button.dataset.id))));
-  };
-  byId('search').oninput = list;
-  list();
-  action(byId('logout'), 'click', async () => { await api('/logout', {}); await dashboard(); });
-  action(byId('new'), 'click', async () => {
-    const invitation = await api('/links', {});
-    const text = 'Olá! Preencha sua pré-ficha para o atendimento: ' + invitation.link;
-    const section = byId('link');
-    section.replaceChildren();
-    const input = document.createElement('input');
-    input.setAttribute('aria-label', 'Link de pré-cadastro');
-    input.readOnly = true;
-    input.value = invitation.link;
-    input.onclick = () => input.select();
-    const share = document.createElement('a');
-    share.className = 'button';
-    share.href = 'https://wa.me/?text=' + encodeURIComponent(text);
-    share.target = '_blank';
-    share.rel = 'noopener noreferrer';
-    share.textContent = 'Compartilhar link pelo WhatsApp';
-    section.append(input, share);
-  });
-}
+const dashboard = createDashboard(openForm);
 
 const path = location.pathname;
 try {

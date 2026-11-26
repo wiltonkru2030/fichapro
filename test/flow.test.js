@@ -51,8 +51,14 @@ test('salva uma vez, protege dados, emite e substitui PDF verificável', async t
   const login = await send('/login', { password: env.ADMIN_PASSWORD });
   assert.equal(login.status, 200);
   const cookie = login.headers.get('set-cookie').split(';')[0];
-  const link = await (await send('/links', {}, cookie)).json();
+  const client = await send('/clients', { name: 'Cliente Teste', phone: '(92) 99999-9999' }, cookie);
+  assert.equal(client.status, 201);
+  assert.equal((await send('/clients', { name: 'Outro nome', phone: '+55 (92) 99999-9999' }, cookie)).status, 409);
+  const link = await (await send('/links', { phone: '92999999999', procedure: 'Coloração' }, cookie)).json();
   const pre = new URL(link.link).pathname;
+  const beforeSubmission = await (await fetch(origin + '/api/forms', { headers: { Cookie: cookie } })).json();
+  assert.equal(beforeSubmission.pending[0].name, 'Cliente Teste');
+  assert.equal((await (await fetch(origin + '/api' + pre)).json()).procedure, 'Coloração');
   const customer = { name: 'Cliente Teste', phone: '92999999999', procedure: 'Coloração', chemical: 'Não', details: '', reaction: '', notes: '' };
   const responses = await Promise.all([send(pre, customer), send(pre, customer)]);
   const saved = await Promise.all(responses.map(response => response.json()));
@@ -61,6 +67,9 @@ test('salva uma vez, protege dados, emite e substitui PDF verificável', async t
   assert.equal((await fetch(origin + '/api/forms/1')).status, 401);
   const dashboard = await (await fetch(origin + '/api/forms', { headers: { Cookie: cookie } })).json();
   assert.equal(dashboard.forms.length, 1);
+  assert.equal(dashboard.pending.length, 0);
+  assert.equal(dashboard.clients[0].phone, '92999999999');
+  assert.equal(dashboard.forms[0].procedure, 'Coloração');
   const signature = await QRCode.toDataURL('assinatura de teste');
   const assessment = { 'Couro cabeludo': '', 'Condição dos fios': 'Avaliado', 'Teste de mecha': '', 'Produtos e fórmula': '', 'Orientações': '' };
   const document = { signature, assessment, terms: 'Termo fictício de teste.', version: null };
@@ -76,4 +85,11 @@ test('salva uma vez, protege dados, emite e substitui PDF verificável', async t
   assert.equal((await send('/forms/1/emitir', document, cookie)).status, 409);
   assert.equal((await send('/forms/1/emitir', { ...document, version: verification.split('/').pop(), replace: true }, cookie)).status, 201);
   assert.equal((await (await fetch(origin + '/api' + verification)).json()).replaced, true);
+  const updated = await (await fetch(origin + '/api/forms', { headers: { Cookie: cookie } })).json();
+  assert.equal(updated.documents.length, 2);
+  const old = updated.documents.find(item => item.replaced);
+  assert.equal(old.code, verification.split('/').pop());
+  assert.equal((await fetch(origin + '/api/documents/' + old.code + '/pdf')).status, 401);
+  const oldPdf = await fetch(origin + '/api/documents/' + old.code + '/pdf', { headers: { Cookie: cookie } });
+  assert.deepEqual(Buffer.from(await oldPdf.arrayBuffer()), pdf);
 });

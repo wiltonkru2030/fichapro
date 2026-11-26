@@ -29,7 +29,7 @@ O formulário fica salvo mesmo se o WhatsApp estiver indisponível. O painel mos
 
 ## Escopo do piloto
 
-Pré-cadastro por link individual de sete dias, painel com busca, avaliação técnica, assinatura desenhada, fotos anexadas ao PDF, emissão e substituição de documentos, e validação pública de integridade. As fotos ficam nas cópias emitidas no banco. O piloto usa acesso único do salão. Contas individuais, modelos editáveis, galeria independente do PDF, instaladores nativos e publicação ficam para uma etapa posterior.
+Pré-cadastro por link individual de sete dias, painel responsivo com busca, cadastro de clientes, histórico por telefone, lista de versões de documentos, avaliação técnica, assinatura desenhada, fotos anexadas ao PDF, emissão e substituição de documentos, e validação pública de integridade. As fotos ficam nas cópias emitidas no banco. O piloto usa acesso único do salão. Contas individuais, modelos editáveis, galeria independente do PDF, instaladores nativos e publicação ficam para uma etapa posterior.
 
 ## Publicação com contêiner
 
@@ -63,3 +63,5 @@ docker compose exec -T app node server/backup.js > fichapro-backup.sqlite
 ```
 
 Use um nome novo a cada cópia e confira o código de saída antes de guardar. O arquivo inclui fichas, fotos e PDFs. Mantenha cópias protegidas fora do computador que hospeda o app. Use `docker compose down` para parar preservando os volumes. A opção `--volumes` remove os dados.
+
+O CSS global usa a marca aprovada e a mesma navegação no celular e no computador. As telas de cadastro de conta, recuperação, equipe e Drive antecipam a integração. O login do piloto usa a senha configurada no servidor e pode exigir o endereço definido em `ADMIN_EMAIL`.
