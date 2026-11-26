@@ -65,3 +65,11 @@ docker compose exec -T app node server/backup.js > fichapro-backup.sqlite
 Use um nome novo a cada cópia e confira o código de saída antes de guardar. O arquivo inclui fichas, fotos e PDFs. Mantenha cópias protegidas fora do computador que hospeda o app. Use `docker compose down` para parar preservando os volumes. A opção `--volumes` remove os dados.
 
 O CSS global usa a marca aprovada e a mesma navegação no celular e no computador. As telas de cadastro de conta, recuperação, equipe e Drive antecipam a integração. O login do piloto usa a senha configurada no servidor e pode exigir o endereço definido em `ADMIN_EMAIL`.
+
+## Google Drive do salão
+
+Habilite a Google Drive API em um projeto Google Cloud e crie um cliente OAuth do tipo aplicativo da Web. Cadastre a origem do app e a URL de redirecionamento exata `PUBLIC_URL/api/drive/callback`. Configure `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` e `DRIVE_ENCRYPTION_KEY` no ambiente do servidor. Gere uma chave de 32 bytes codificada em Base64 e preserve-a com os backups do banco. Não publique essas credenciais no Git.
+
+No painel, abra **Configurações → Armazenamento → Conectar Google Drive** e autorize a conta do salão. A integração usa acesso restrito aos arquivos criados ou compartilhados com o app. Cada versão emitida recebe uma pasta própria identificada pela ficha. O PDF e as fotos ficam no Drive. O servidor guarda referências e confere a integridade do PDF antes do download. As versões emitidas antes da integração continuam disponíveis no SQLite.
+
+A integração do Drive nesta versão mantém metadados e credenciais criptografadas no SQLite. A migração SQL no diretório `server/migrations/superdb` é a base para a troca da persistência, que ainda não é usada pelo servidor.

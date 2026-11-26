@@ -32,7 +32,7 @@ test('salva uma vez, protege dados, emite e substitui PDF verificável', async t
   await new Promise(resolve => net.close(resolve));
   const origin = 'http://localhost:' + port;
   const env = { ...process.env, PORT: String(port), PUBLIC_URL: origin, DB_PATH: join(folder, 'test.db'),
-    ADMIN_PASSWORD: 'senha-apenas-de-teste', WA_TOKEN: '', NODE_ENV: 'test' };
+    ADMIN_PASSWORD: 'senha-apenas-de-teste', WA_TOKEN: '', NODE_ENV: 'test', GOOGLE_CLIENT_ID: '' };
   const processUnderTest = spawn(process.execPath, ['server/index.js'], { env });
   t.after(async () => {
     if (processUnderTest.exitCode === null) {
@@ -51,6 +51,11 @@ test('salva uma vez, protege dados, emite e substitui PDF verificável', async t
   const login = await send('/login', { password: env.ADMIN_PASSWORD });
   assert.equal(login.status, 200);
   const cookie = login.headers.get('set-cookie').split(';')[0];
+  assert.equal((await fetch(origin + '/api/drive')).status, 401);
+  const storage = await fetch(origin + '/api/drive', { headers: { Cookie: cookie } });
+  assert.deepEqual(await storage.json(), { configured: false, connected: false, folder: null });
+  assert.equal((await send('/drive/connect', {}, cookie)).status, 503);
+  assert.equal((await fetch(origin + '/api/drive/callback?state=invalid', { headers: { Cookie: cookie } })).status, 403);
   const client = await send('/clients', { name: 'Cliente Teste', phone: '(92) 99999-9999' }, cookie);
   assert.equal(client.status, 201);
   assert.equal((await send('/clients', { name: 'Outro nome', phone: '+55 (92) 99999-9999' }, cookie)).status, 409);

@@ -89,7 +89,8 @@ function renderInvite(clients, initialPhone) {
 }
 
 export function createDashboard(openForm) {
-  let selected = 'inicio';
+  let driveResult = new URLSearchParams(location.search).get('drive');
+  let selected = driveResult ? 'configuracoes' : 'inicio';
   let status = 'received';
   const shell = (title, top = '') => {
     document.body.dataset.view = 'dashboard';
@@ -210,18 +211,40 @@ export function createDashboard(openForm) {
         row({ title: label, glyph, type: 'setting', value: id })).join('')}<button id="logout">Sair</button></div>
         <aside id="workspace" aria-label="Detalhes das configurações"></aside></div>`;
       action(byId('logout'), 'click', async () => { await api('/logout', {}); selected = 'inicio'; await dashboard(); });
-      content.querySelectorAll('[data-setting]').forEach(button => action(button, 'click', () => {
+      content.querySelectorAll('[data-setting]').forEach(button => action(button, 'click', async () => {
         const [id, label] = settings.find(([key]) => key === button.dataset.setting);
+        if (id === 'drive') {
+          const storage = await api('/drive');
+          byId('workspace').innerHTML = `<section class="task-panel card"><h2>Google Drive do salão</h2>
+            <span class="badge ${storage.connected ? '' : 'warning'}">${storage.connected ? 'Conectado' : 'Desconectado'}</span>
+            <p>Guarde as fotos e os PDFs na conta do salão.</p>
+            ${storage.folder ? `<a class="button" rel="noopener noreferrer" target="_blank" href="${escape(storage.folder)}">Abrir pasta</a>` : ''}
+            <button id="connect-drive" class="primary" ${storage.configured ? '' : 'disabled'}>${storage.connected ? 'Trocar conta' : 'Conectar Google Drive'}</button>
+            ${storage.configured ? '' : '<p>A integração ainda precisa ser configurada no servidor.</p>'}</section>`;
+          if (driveResult) {
+            message.textContent = { conectado: 'Google Drive conectado.', cancelado: 'Conexão cancelada.',
+              erro: 'Não foi possível conectar. Tente novamente.' }[driveResult] || '';
+            driveResult = null;
+          }
+          action(byId('connect-drive'), 'click', async () => {
+            const { url } = await api('/drive/connect', {});
+            location.assign(url);
+          });
+          return;
+        }
         const details = {
           perfil: `<p>${escape(data.salon)}</p>`,
           equipe: '<p>O acesso individual da equipe será habilitado com a integração do SuperDB.</p>',
-          modelos: `<ul>${models.map(name => `<li>${name}</li>`).join('')}</ul>`,
-          drive: '<span class="badge warning">Desconectado</span><p>Guarde as fotos e os PDFs na conta do salão.</p><button class="primary" disabled>Conectar Google Drive</button>'
+          modelos: `<ul>${models.map(name => `<li>${name}</li>`).join('')}</ul>`
         };
         byId('workspace').innerHTML = `<section class="task-panel card"><h2>${label}</h2>${details[id]}</section>`;
       }));
     };
     drawSettings();
+    if (driveResult && location.search) {
+      history.replaceState(null, '', '/');
+      byId('content').querySelector('[data-setting="drive"]').click();
+    }
   }
   return dashboard;
 }

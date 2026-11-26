@@ -5,11 +5,13 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { notify } from './whatsapp.js';
 import { renderPdf } from './pdf.js';
+import { createDrive } from './drive.js';
 
 const token = () => randomBytes(24).toString('base64url');
 const hash = value => createHash('sha256').update(value).digest('hex');
 const number = id => 'FP-' + String(id).padStart(6, '0');
 const publicUrl = new URL(process.env.PUBLIC_URL || 'http://localhost:3000');
+const drive = createDrive({ origin: publicUrl });
 const salon = process.env.SALON_NAME || 'FichaPro';
 const password = process.env.ADMIN_PASSWORD || '';
 const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
@@ -32,6 +34,17 @@ db.exec(`
     issued INTEGER NOT NULL, digest TEXT NOT NULL, pdf BLOB NOT NULL, replaced INTEGER
   );
   CREATE UNIQUE INDEX IF NOT EXISTS active_document ON documents(form_id) WHERE replaced IS NULL;
+  CREATE TABLE IF NOT EXISTS drive_connections (
+    account TEXT PRIMARY KEY, root TEXT NOT NULL, refresh BLOB NOT NULL, active INTEGER NOT NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS one_drive ON drive_connections(active) WHERE active=1;
+  CREATE TABLE IF NOT EXISTS drive_states (
+    state TEXT PRIMARY KEY, session TEXT NOT NULL, verifier TEXT NOT NULL, expires INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS drive_documents (
+    code TEXT PRIMARY KEY REFERENCES documents(code), account TEXT NOT NULL REFERENCES drive_connections(account),
+    pdf_id TEXT NOT NULL, photo_ids TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS clients (
     phone TEXT PRIMARY KEY, name TEXT NOT NULL
   );
@@ -104,6 +117,16 @@ function loginLimit(ip) {
   attempts.set(ip, entry);
 }
 
+// A versão emitida pode ter sido salva localmente antes de conectar o Drive.
+async function documentBytes(doc) {
+  const stored = get('SELECT account,pdf_id FROM drive_documents WHERE code=?', doc.code);
+  if (!stored) return Buffer.from(doc.pdf);
+  const connection = get('SELECT * FROM drive_connections WHERE account=?', stored.account);
+  const pdf = await drive.download(connection, stored.pdf_id);
+  if (hash(pdf) !== doc.digest) throw fail(409, 'O PDF salvo no Drive foi alterado e não corresponde à versão emitida.');
+  return pdf;
+}
+
 async function route(req, res) {
   const { pathname: url } = new URL(req.url, publicUrl);
   const method = req.method;
@@ -144,7 +167,7 @@ async function route(req, res) {
     const id = token();
     run('DELETE FROM sessions WHERE expires < ?', Date.now());
     run('INSERT INTO sessions VALUES (?, ?)', hash(id), Date.now() + 43_200_000);
-    res.setHeader('Set-Cookie', `fp=${id}; Path=/; HttpOnly; SameSite=Strict; Max-Age=43200${secure}`);
+    res.setHeader('Set-Cookie', `fp=${id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=43200${secure}`);
     return json({ salon });
   }
 
@@ -182,9 +205,55 @@ async function route(req, res) {
 
   if (!url.startsWith('/api/')) throw fail(404, 'Página não encontrada.');
   if (!session || !get('SELECT 1 FROM sessions WHERE id=? AND expires>?', hash(session), Date.now())) throw fail(401, 'Entre para acessar o painel.');
+  if (method === 'GET' && url === '/api/drive') {
+    const connection = get('SELECT root FROM drive_connections WHERE active=1');
+    return json({ configured: drive.configured, connected: Boolean(connection),
+      folder: connection ? 'https://drive.google.com/drive/folders/' + encodeURIComponent(connection.root) : null });
+  }
+  if (method === 'POST' && url === '/api/drive/connect') {
+    if (!drive.configured) throw fail(503, 'A integração com o Google Drive ainda não foi configurada.');
+    const state = token();
+    const verifier = randomBytes(48).toString('base64url');
+    const challenge = createHash('sha256').update(verifier).digest('base64url');
+    run('DELETE FROM drive_states WHERE expires<? OR session=?', Date.now(), hash(session));
+    run('INSERT INTO drive_states VALUES (?,?,?,?)', hash(state), hash(session), verifier, Date.now() + 600_000);
+    return json({ url: drive.authorization(state, challenge) });
+  }
+  if (method === 'GET' && url === '/api/drive/callback') {
+    const params = new URL(req.url, publicUrl).searchParams;
+    const pending = get('SELECT verifier FROM drive_states WHERE state=? AND session=? AND expires>?',
+      hash(params.get('state') || ''), hash(session), Date.now());
+    if (!pending || !run('DELETE FROM drive_states WHERE state=?', hash(params.get('state'))).changes) {
+      throw fail(403, 'A solicitação expirou. Conecte novamente pelo painel.');
+    }
+    const code = params.get('code');
+    let outcome = 'cancelado';
+    if (code && drive.configured) {
+      try {
+        const connection = await drive.connect(code, pending.verifier,
+          account => get('SELECT root FROM drive_connections WHERE account=?', account));
+        db.exec('BEGIN IMMEDIATE');
+        try {
+          run('UPDATE drive_connections SET active=0 WHERE active=1');
+          run(`INSERT INTO drive_connections VALUES (?,?,?,1)
+            ON CONFLICT(account) DO UPDATE SET root=excluded.root, refresh=excluded.refresh, active=1`,
+          connection.account, connection.root, connection.refresh);
+          db.exec('COMMIT');
+        } catch (error) {
+          db.exec('ROLLBACK');
+          throw error;
+        }
+        outcome = 'conectado';
+      } catch {
+        outcome = 'erro';
+      }
+    }
+    res.writeHead(303, { Location: '/?drive=' + outcome });
+    return res.end();
+  }
   if (method === 'POST' && url === '/api/logout') {
     run('DELETE FROM sessions WHERE id=?', hash(session));
-    res.setHeader('Set-Cookie', `fp=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure}`);
+    res.setHeader('Set-Cookie', `fp=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`);
     return json({});
   }
   if (method === 'POST' && url === '/api/clients') {
@@ -231,10 +300,11 @@ async function route(req, res) {
   }
   const download = url.match(/^\/api\/documents\/([\w-]{32})\/pdf$/);
   if (method === 'GET' && download) {
-    const doc = get('SELECT form_id,pdf FROM documents WHERE code=?', download[1]);
+    const doc = get('SELECT code,form_id,pdf,digest FROM documents WHERE code=?', download[1]);
     if (!doc) throw fail(404, 'Documento não encontrado.');
+    const bytes = await documentBytes(doc);
     res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="${number(doc.form_id)}.pdf"` });
-    return res.end(Buffer.from(doc.pdf));
+    return res.end(bytes);
   }
   const formRoute = url.match(/^\/api\/forms\/(\d+)(?:\/(pdf|emitir))?$/);
   if (formRoute) {
@@ -247,8 +317,9 @@ async function route(req, res) {
     if (method === 'GET' && !action) return json({ number: number(id), customer, assessment: JSON.parse(row.assessment || '{}'), issued: Boolean(doc), version: doc?.code ?? null });
     if (method === 'GET' && action === 'pdf') {
       if (!doc) throw fail(404, 'PDF ainda não emitido.');
+      const bytes = await documentBytes(doc);
       res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="${number(id)}.pdf"` });
-      return res.end(Buffer.from(doc.pdf));
+      return res.end(bytes);
     }
     if (method === 'POST' && (action === 'emitir' || !action)) {
       const data = await body(req, 8_000_000);
@@ -273,17 +344,27 @@ async function route(req, res) {
       } catch {
         throw fail(422, 'Não foi possível ler a assinatura ou as fotos. Revise os arquivos.');
       }
-      db.exec('BEGIN IMMEDIATE');
+      const connection = get('SELECT * FROM drive_connections WHERE active=1');
+      if (drive.configured && !connection) throw fail(409, 'Conecte o Drive do salão antes de emitir o PDF.');
+      const stored = connection ? await drive.store(connection, number(id) + '-' + code.slice(0, 8), [
+        { name: number(id) + '.pdf', type: 'application/pdf', bytes: pdf },
+        ...photos.map(photo => ({ name: photo.label.toLowerCase() + '.jpg', type: 'image/jpeg',
+          bytes: Buffer.from(photo.image.split(',')[1], 'base64') }))
+      ]) : null;
       try {
+        db.exec('BEGIN IMMEDIATE');
         if ((get('SELECT code FROM documents WHERE form_id=? AND replaced IS NULL', id)?.code ?? null) !== data.version) {
           throw fail(409, 'A ficha já tem uma versão mais recente.');
         }
         run('UPDATE documents SET replaced=? WHERE form_id=? AND replaced IS NULL', issued, id);
-        run('INSERT INTO documents VALUES (?,?,?,?,?,NULL)', code, id, issued, hash(pdf), pdf);
+        run('INSERT INTO documents VALUES (?,?,?,?,?,NULL)', code, id, issued, hash(pdf), stored ? Buffer.alloc(0) : pdf);
+        if (stored) run('INSERT INTO drive_documents VALUES (?,?,?,?)', code, connection.account, stored.ids[0],
+          JSON.stringify(Object.fromEntries(photos.map((photo, i) => [photo.label, stored.ids[i + 1]]))));
         run('UPDATE forms SET assessment=? WHERE id=?', JSON.stringify(assessment), id);
         db.exec('COMMIT');
       } catch (error) {
-        db.exec('ROLLBACK');
+        if (db.isTransaction) db.exec('ROLLBACK');
+        if (stored) await stored.discard().catch(() => {});
         throw error;
       }
       return json({ number: number(id), verification: '/validar/' + code }, 201);
