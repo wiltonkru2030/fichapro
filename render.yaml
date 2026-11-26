@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: fichapro
+    runtime: node
+    plan: free
+    branch: main
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: 24.22.3
+      - key: NODE_ENV
+        value: production
+      - key: SALON_NAME
+        value: Studio Mãos de Fadas
+      - key: SUPERDB_PROJECT
+        value: p_be928f3912
+      - key: SUPERDB_URL
+        value: https://auth.superdb.com.br
+      - key: SUPERDB_SERVICE_ROLE_KEY
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: DRIVE_ENCRYPTION_KEY
+        generateValue: true

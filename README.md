@@ -81,3 +81,11 @@ O SuperDB atende este servidor pelo SDK, via PostgREST. No projeto FichaPro (`p_
 Defina `SUPERDB_URL=https://auth.superdb.com.br`, `SUPERDB_PROJECT=p_be928f3912` e `SUPERDB_SERVICE_ROLE_KEY` nos segredos da hospedagem. Valide `GET /healthz` após iniciar o servidor. Com essa configuração, formulários, clientes, avaliações, sessões e referências são lidos e gravados no SuperDB. A emissão de PDF exige um Drive conectado. O PDF e as fotos ficam no Drive do salão. O modo atual atende um salão por instalação.
 
 Sem essas variáveis, o piloto continua com SQLite. A troca de modo inicia os dados a partir do banco selecionado. Ela não importa fichas, PDFs, clientes, sessões ou credenciais do SQLite automaticamente. Preserve seu backup antes da troca e use dados fictícios para homologar o novo fluxo.
+
+## Publicar no Render grátis
+
+O [Blueprint](render.yaml) usa o plano gratuito, conecta o repositório à branch `main` e verifica o servidor em `/healthz`. A URL HTTPS padrão do Render é usada automaticamente para os links e para o QR. O servidor exige o SuperDB nesse ambiente para que os dados sobrevivam aos reinícios.
+
+No painel do Render, crie um Blueprint usando este repositório. Informe `ADMIN_PASSWORD` (mínimo de 12 caracteres) e a `SUPERDB_SERVICE_ROLE_KEY` do projeto **FichaPro** nos campos de ambiente secretos do Render. A chave de criptografia do Drive é criada pelo Blueprint. Preserve-a se recriar o serviço, pois ela protege as conexões OAuth existentes.
+
+Após o primeiro deploy, veja o endereço HTTPS atribuído ao serviço. Cadastre `https://SEU-SERVIÇO.onrender.com/api/drive/callback` como a URL exata de redirecionamento no cliente OAuth do Google. Salve `GOOGLE_CLIENT_ID` e `GOOGLE_CLIENT_SECRET` no ambiente do Render, então conecte a conta no painel do FichaPro. As variáveis do WhatsApp podem ser cadastradas no mesmo ambiente.

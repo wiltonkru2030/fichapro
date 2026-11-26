@@ -11,7 +11,7 @@ import { createSuperdb } from './superdb.js';
 const token = () => randomBytes(24).toString('base64url');
 const hash = value => createHash('sha256').update(value).digest('hex');
 const number = id => 'FP-' + String(id).padStart(6, '0');
-const publicUrl = new URL(process.env.PUBLIC_URL || 'http://localhost:3000');
+const publicUrl = new URL(process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || 'http://localhost:3000');
 const drive = createDrive({ origin: publicUrl });
 const salon = process.env.SALON_NAME || 'FichaPro';
 const password = process.env.ADMIN_PASSWORD || '';
@@ -22,6 +22,9 @@ if (process.env.NODE_ENV === 'production' && (publicUrl.protocol !== 'https:' ||
 const secure = publicUrl.protocol === 'https:' ? '; Secure' : '';
 const path = process.env.DB_PATH || 'data/fichapro.sqlite';
 const remote = createSuperdb();
+if (process.env.RENDER_EXTERNAL_URL && !remote) {
+  throw new Error('No Render, configure o SuperDB antes de iniciar para preservar os dados.');
+}
 if (!remote) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 const db = remote ? null : new DatabaseSync(path);
 db?.exec(`
