@@ -45,3 +45,21 @@ docker run --restart unless-stopped --env-file .env \
 ```
 
 Para esse exemplo, use `PORT=3000` e configure o proxy HTTPS da máquina para acessar a porta local 3000. Caso a hospedagem monte um diretório próprio no lugar do volume Docker, conceda escrita nesse diretório ao usuário do contêiner. Preserve o volume em atualizações e teste a recuperação dos backups antes de receber fichas reais.
+
+## Hospedar em um computador próprio
+
+Com um computador já disponível e um domínio que você controla, o Compose roda o FichaPro e o Caddy sem precisar contratar um plano de hospedagem. O computador precisa ficar ligado e conectado para que clientes abram os links. A conexão precisa aceitar acesso público às portas TCP 80 e 443. Se o provedor usa CGNAT e não oferece acesso público por IPv6, esta configuração direta precisa de outra forma de acesso.
+
+1. Aponte um subdomínio para o endereço público do computador ou da rede e disponibilize as portas do Caddy. Se houver roteador, encaminhe as portas para o computador. Use um subdomínio dedicado para preservar a configuração do site principal.
+2. Copie `.env.example` para `.env`. Preencha `FICHAPRO_DOMAIN` com o subdomínio, sem `https://`, e configure a senha do salão. Nesse modo, o Compose calcula `PUBLIC_URL` usando o subdomínio.
+3. Execute `docker compose up -d --build`. Confira `docker compose ps` e abra `https://SEU-SUBDOMINIO/healthz` fora da rede local. O servidor Node e o SQLite ficam na rede interna do Compose.
+4. Antes de compartilhar com clientes, faça um atendimento fictício pelo endereço externo e abra o QR no celular.
+
+Para salvar uma cópia consistente do banco enquanto o app está rodando, execute na pasta do projeto:
+
+```sh
+umask 077
+docker compose exec -T app node server/backup.js > fichapro-backup.sqlite
+```
+
+Use um nome novo a cada cópia e confira o código de saída antes de guardar. O arquivo inclui fichas, fotos e PDFs. Mantenha cópias protegidas fora do computador que hospeda o app. Use `docker compose down` para parar preservando os volumes. A opção `--volumes` remove os dados.
