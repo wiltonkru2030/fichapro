@@ -32,7 +32,7 @@ test('salva uma vez, protege dados, emite e substitui PDF verificável', async t
   await new Promise(resolve => net.close(resolve));
   const origin = 'http://localhost:' + port;
   const env = { ...process.env, PORT: String(port), PUBLIC_URL: origin, DB_PATH: join(folder, 'test.db'),
-    ADMIN_PASSWORD: 'senha-apenas-de-teste', WA_TOKEN: '' };
+    ADMIN_PASSWORD: 'senha-apenas-de-teste', WA_TOKEN: '', NODE_ENV: 'test' };
   const processUnderTest = spawn(process.execPath, ['server/index.js'], { env });
   t.after(async () => {
     if (processUnderTest.exitCode === null) {
@@ -45,6 +45,9 @@ test('salva uma vez, protege dados, emite e substitui PDF verificável', async t
   const send = (path, data, cookie = '') => fetch(origin + '/api' + path, {
     method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify(data)
   });
+  const health = await fetch(origin + '/healthz');
+  assert.equal(health.status, 200);
+  assert.deepEqual(await health.json(), { status: 'ok' });
   const login = await send('/login', { password: env.ADMIN_PASSWORD });
   assert.equal(login.status, 200);
   const cookie = login.headers.get('set-cookie').split(';')[0];

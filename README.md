@@ -30,3 +30,18 @@ O formulário fica salvo mesmo se o WhatsApp estiver indisponível. O painel mos
 ## Escopo do piloto
 
 Pré-cadastro por link individual de sete dias, painel com busca, avaliação técnica, assinatura desenhada, fotos anexadas ao PDF, emissão e substituição de documentos, e validação pública de integridade. As fotos ficam nas cópias emitidas no banco. O piloto usa acesso único do salão. Contas individuais, modelos editáveis, galeria independente do PDF, instaladores nativos e publicação ficam para uma etapa posterior.
+
+## Publicação com contêiner
+
+O `Dockerfile` empacota o servidor e roda como usuário sem privilégios. Use uma única instância, com armazenamento persistente em `/app/data` e um proxy HTTPS. A plataforma pode verificar a inicialização em `GET /healthz`.
+
+Configure `PUBLIC_URL` com a origem HTTPS externa e `ADMIN_PASSWORD` como segredo da hospedagem. Configure também os segredos do WhatsApp para habilitar o aviso. Ao usar o contêiner, informe as variáveis pela hospedagem ou com `--env-file`, mantendo o arquivo fora da imagem e do Git.
+
+```sh
+docker build -t fichapro .
+docker volume create fichapro-data
+docker run --restart unless-stopped --env-file .env \
+  -p 127.0.0.1:3000:3000 -v fichapro-data:/app/data fichapro
+```
+
+Para esse exemplo, use `PORT=3000` e configure o proxy HTTPS da máquina para acessar a porta local 3000. Caso a hospedagem monte um diretório próprio no lugar do volume Docker, conceda escrita nesse diretório ao usuário do contêiner. Preserve o volume em atualizações e teste a recuperação dos backups antes de receber fichas reais.

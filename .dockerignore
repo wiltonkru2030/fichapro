@@ -1,0 +1,10 @@
+*
+!package.json
+!package-lock.json
+!server/
+!server/**
+!public/
+!public/**
+!design/
+!design/marca/
+!design/marca/logo-claro.svg

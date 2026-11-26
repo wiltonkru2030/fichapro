@@ -12,6 +12,9 @@ const number = id => 'FP-' + String(id).padStart(6, '0');
 const publicUrl = new URL(process.env.PUBLIC_URL || 'http://localhost:3000');
 const salon = process.env.SALON_NAME || 'FichaPro';
 const password = process.env.ADMIN_PASSWORD || '';
+if (process.env.NODE_ENV === 'production' && (publicUrl.protocol !== 'https:' || password.length < 12)) {
+  throw new Error('Em produção, configure PUBLIC_URL com HTTPS e ADMIN_PASSWORD com pelo menos 12 caracteres.');
+}
 const secure = publicUrl.protocol === 'https:' ? '; Secure' : '';
 const path = process.env.DB_PATH || 'data/fichapro.sqlite';
 mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -97,6 +100,10 @@ async function route(req, res) {
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify(data));
   };
+  if (method === 'GET' && url === '/healthz') {
+    get('SELECT 1');
+    return json({ status: 'ok' });
+  }
   if (method === 'POST' && !sameOrigin) throw fail(403, 'Origem inválida.');
   if (method === 'GET' && assets.has(url)) {
     const [file, mime] = assets.get(url);
