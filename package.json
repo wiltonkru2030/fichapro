@@ -1,0 +1,25 @@
+{
+  "name": "fichapro",
+  "version": "1.0.0",
+  "description": "Kit de identidade visual do FichaPro, baseado na proposta aprovada.",
+  "scripts": {
+    "test": "node --test",
+    "start": "node --env-file-if-exists=.env server/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wiltonkru2030/fichapro.git"
+  },
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/wiltonkru2030/fichapro/issues"
+  },
+  "homepage": "https://github.com/wiltonkru2030/fichapro#readme",
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "pdfkit": "^0.21.0",
+    "qrcode": "^1.5.4"
+  }
+}

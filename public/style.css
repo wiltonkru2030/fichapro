@@ -1,0 +1,48 @@
+:root {
+  --ink: #10243b;
+  --blue: #2457d6;
+  --paper: #f4f7fb;
+  --cyan: #a9e8ef;
+  --line: #a9b9ce;
+  font: 1rem system-ui, sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+}
+* { box-sizing: border-box; }
+body { max-width: 720px; margin: auto; padding: 1.3rem; }
+header { border-bottom: 1px solid var(--line); padding: 1rem 0; }
+h1 { font-size: clamp(2rem, 6vw, 2.75rem); line-height: 1.05; margin: 1.5rem 0; }
+h2 { font-size: 1.2rem; }
+form, section, .stack { display: grid; gap: 1rem; }
+section { margin: 1rem 0; }
+label { display: grid; gap: .35rem; font-weight: 600; }
+input, textarea, select, button, .button { font: inherit; }
+input:not([type=checkbox]), textarea, select {
+  min-height: 48px; width: 100%; border: 1px solid var(--line); border-radius: 10px;
+  background: white; color: var(--ink); padding: .7rem;
+}
+textarea { min-height: 90px; resize: vertical; }
+button, .button {
+  border: 1px solid var(--line); border-radius: 10px; background: white;
+  color: var(--ink); padding: .8rem 1rem; min-height: 48px; font-weight: 700;
+  text-align: center; cursor: pointer; text-decoration: none;
+}
+.primary {
+  background: var(--blue); border-color: var(--blue); color: white;
+  clip-path: polygon(0 0,100% 0,100% calc(100% - 9px),calc(100% - 9px) calc(100% - 9px),calc(100% - 9px) 100%,0 100%);
+}
+button:disabled { opacity: .65; cursor: wait; }
+:focus-visible { outline: 3px solid #0c5895; outline-offset: 2px; }
+.card, details { border: 1px solid var(--line); padding: 1rem; border-radius: 12px; background: white; }
+.badge { background: var(--cyan); border-radius: 999px; padding: .35rem .75rem; width: fit-content; font-weight: 650; }
+.row, .check { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; }
+.row > * { flex: 1 1 auto; }
+.check input { flex: none; width: 1.2rem; height: 1.2rem; }
+canvas { width: 100%; height: 150px; background: white; border: 1px solid var(--line); border-radius: 10px; touch-action: none; }
+#message:not(:empty) { border-left: 4px solid var(--blue); padding: .7rem; background: white; }
+dl { margin: 0; overflow-wrap: anywhere; }
+dt { font-weight: 700; margin-top: .8rem; }
+dd { margin: 0; white-space: pre-wrap; }
+.photo { width: min(100%, 320px); border-radius: 10px; }
+
+[hidden] { display: none !important; }
