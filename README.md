@@ -72,4 +72,12 @@ Habilite a Google Drive API em um projeto Google Cloud e crie um cliente OAuth d
 
 No painel, abra **Configurações → Armazenamento → Conectar Google Drive** e autorize a conta do salão. A integração usa acesso restrito aos arquivos criados ou compartilhados com o app. Cada versão emitida recebe uma pasta própria identificada pela ficha. O PDF e as fotos ficam no Drive. O servidor guarda referências e confere a integridade do PDF antes do download. As versões emitidas antes da integração continuam disponíveis no SQLite.
 
-A integração do Drive nesta versão mantém metadados e credenciais criptografadas no SQLite. A migração SQL no diretório `server/migrations/superdb` é a base para a troca da persistência, que ainda não é usada pelo servidor.
+O modo local mantém metadados e credenciais criptografadas no SQLite. Para executar com o SuperDB, consulte a seção abaixo.
+
+## Persistência online no SuperDB
+
+O SuperDB atende este servidor pelo SDK, via PostgREST. No projeto FichaPro (`p_be928f3912`), verifique a migração `001_fichapro.sql` e execute `002_server_api.sql` no SQL Editor. O segundo arquivo usa a transação do editor e restringe a função de dados à credencial de serviço.
+
+Defina `SUPERDB_URL=https://auth.superdb.com.br`, `SUPERDB_PROJECT=p_be928f3912` e `SUPERDB_SERVICE_ROLE_KEY` nos segredos da hospedagem. Valide `GET /healthz` após iniciar o servidor. Com essa configuração, formulários, clientes, avaliações, sessões e referências são lidos e gravados no SuperDB. A emissão de PDF exige um Drive conectado. O PDF e as fotos ficam no Drive do salão. O modo atual atende um salão por instalação.
+
+Sem essas variáveis, o piloto continua com SQLite. A troca de modo inicia os dados a partir do banco selecionado. Ela não importa fichas, PDFs, clientes, sessões ou credenciais do SQLite automaticamente. Preserve seu backup antes da troca e use dados fictícios para homologar o novo fluxo.

@@ -19,6 +19,7 @@
     "node": ">=24"
   },
   "dependencies": {
+    "@superdb/client": "^0.5.1",
     "pdfkit": "^0.21.0",
     "qrcode": "^1.5.4"
   }

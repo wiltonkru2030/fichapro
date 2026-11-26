@@ -32,7 +32,7 @@ test('salva uma vez, protege dados, emite e substitui PDF verificável', async t
   await new Promise(resolve => net.close(resolve));
   const origin = 'http://localhost:' + port;
   const env = { ...process.env, PORT: String(port), PUBLIC_URL: origin, DB_PATH: join(folder, 'test.db'),
-    ADMIN_PASSWORD: 'senha-apenas-de-teste', WA_TOKEN: '', NODE_ENV: 'test', GOOGLE_CLIENT_ID: '' };
+    ADMIN_PASSWORD: 'senha-apenas-de-teste', WA_TOKEN: '', NODE_ENV: 'test', GOOGLE_CLIENT_ID: '', SUPERDB_URL: '', SUPERDB_PROJECT: '', SUPERDB_SERVICE_ROLE_KEY: '' };
   const processUnderTest = spawn(process.execPath, ['server/index.js'], { env });
   t.after(async () => {
     if (processUnderTest.exitCode === null) {

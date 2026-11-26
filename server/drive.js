@@ -41,7 +41,7 @@ export function createDrive({ origin, env = process.env, request = fetch }) {
   }
 
   function unseal(value) {
-    const data = Buffer.from(value);
+    const data = Buffer.from(value, typeof value === 'string' ? 'hex' : undefined);
     const decipher = createDecipheriv('aes-256-gcm', key, data.subarray(0, 12));
     decipher.setAuthTag(data.subarray(12, 28));
     return Buffer.concat([decipher.update(data.subarray(28)), decipher.final()]).toString('utf8');
@@ -101,7 +101,7 @@ export function createDrive({ origin, env = process.env, request = fetch }) {
       });
       const account = (await response.json()).user?.permissionId;
       if (!account) throw error('Não foi possível identificar a conta do Drive.');
-      return { account, root: findExisting(account)?.root || await folder(result.access_token, 'FichaPro'), refresh: seal(result.refresh_token) };
+      return { account, root: (await findExisting(account))?.root || await folder(result.access_token, 'FichaPro'), refresh: seal(result.refresh_token) };
     },
     async store(connection, name, files) {
       const bearer = await access(connection);

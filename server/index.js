@@ -6,6 +6,7 @@ import { dirname } from 'node:path';
 import { notify } from './whatsapp.js';
 import { renderPdf } from './pdf.js';
 import { createDrive } from './drive.js';
+import { createSuperdb } from './superdb.js';
 
 const token = () => randomBytes(24).toString('base64url');
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -20,9 +21,10 @@ if (process.env.NODE_ENV === 'production' && (publicUrl.protocol !== 'https:' ||
 }
 const secure = publicUrl.protocol === 'https:' ? '; Secure' : '';
 const path = process.env.DB_PATH || 'data/fichapro.sqlite';
-mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-const db = new DatabaseSync(path);
-db.exec(`
+const remote = createSuperdb();
+if (!remote) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+const db = remote ? null : new DatabaseSync(path);
+db?.exec(`
   PRAGMA journal_mode=WAL;
   PRAGMA foreign_keys=ON;
   CREATE TABLE IF NOT EXISTS forms (
@@ -56,6 +58,19 @@ db.exec(`
 const get = (sql, ...args) => db.prepare(sql).get(...args);
 const all = (sql, ...args) => db.prepare(sql).all(...args);
 const run = (sql, ...args) => db.prepare(sql).run(...args);
+// Cada operação remota tem SQL fixo. O callback mantém compatibilidade com o piloto local.
+const call = (operation, args, local) => remote ? remote(operation, args) : local();
+const transaction = work => {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const result = work();
+    db.exec('COMMIT');
+    return result;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+};
 const assets = new Map([
   ['/app.js', ['public/app.js', 'text/javascript']],
   ['/style.css', ['public/style.css', 'text/css']],
@@ -119,9 +134,9 @@ function loginLimit(ip) {
 
 // A versão emitida pode ter sido salva localmente antes de conectar o Drive.
 async function documentBytes(doc) {
-  const stored = get('SELECT account,pdf_id FROM drive_documents WHERE code=?', doc.code);
+  const stored = doc.pdf_id ? doc : get('SELECT account,pdf_id FROM drive_documents WHERE code=?', doc.code);
   if (!stored) return Buffer.from(doc.pdf);
-  const connection = get('SELECT * FROM drive_connections WHERE account=?', stored.account);
+  const connection = await call('drive_account', { account: stored.account }, () => get('SELECT * FROM drive_connections WHERE account=?', stored.account));
   const pdf = await drive.download(connection, stored.pdf_id);
   if (hash(pdf) !== doc.digest) throw fail(409, 'O PDF salvo no Drive foi alterado e não corresponde à versão emitida.');
   return pdf;
@@ -141,7 +156,7 @@ async function route(req, res) {
     res.end(JSON.stringify(data));
   };
   if (method === 'GET' && url === '/healthz') {
-    get('SELECT 1');
+    await call('health', {}, () => get('SELECT 1'));
     return json({ status: 'ok' });
   }
   if (method === 'POST' && !sameOrigin) throw fail(403, 'Origem inválida.');
@@ -165,48 +180,55 @@ async function route(req, res) {
     }
     attempts.delete(req.socket.remoteAddress);
     const id = token();
-    run('DELETE FROM sessions WHERE expires < ?', Date.now());
-    run('INSERT INTO sessions VALUES (?, ?)', hash(id), Date.now() + 43_200_000);
+    const expires = Date.now() + 43_200_000;
+    await call('session_create', { id: hash(id), expires }, () => {
+      run('DELETE FROM sessions WHERE expires < ?', Date.now());
+      run('INSERT INTO sessions VALUES (?, ?)', hash(id), expires);
+    });
     res.setHeader('Set-Cookie', `fp=${id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=43200${secure}`);
     return json({ salon });
   }
 
   const pre = url.match(/^\/api\/pre\/([\w-]{32})$/);
   if (pre) {
-    const form = get('SELECT id, expires, submitted, notification FROM forms WHERE link=?', hash(pre[1]));
+    const link = hash(pre[1]);
+    const form = await call('prefill', { link }, () => get(`SELECT forms.id, forms.expires, forms.submitted, forms.notification, invitations.procedure
+      FROM forms LEFT JOIN invitations ON invitations.form_id=forms.id WHERE forms.link=?`, link));
     if (!form || form.expires < Date.now()) throw fail(404, 'Link inválido ou expirado. Peça outro ao salão.');
-    if (method === 'GET') return json({ salon, submitted: Boolean(form.submitted), number: form.submitted ? number(form.id) : null, procedure: get('SELECT procedure FROM invitations WHERE form_id=?', form.id)?.procedure ?? '' });
+    if (method === 'GET') return json({ salon, submitted: Boolean(form.submitted), number: form.submitted ? number(form.id) : null, procedure: form.procedure ?? '' });
     if (method === 'POST') {
       if (form.submitted) return json({ number: number(form.id), notification: form.notification });
       const data = await body(req);
       const customer = {
         name: field(data.name, 120, true), phone: field(data.phone, 25, true).replace(/\D/g, ''),
-        procedure: get('SELECT procedure FROM invitations WHERE form_id=?', form.id)?.procedure || field(data.procedure, 150, true), chemical: field(data.chemical, 20, true),
+        procedure: form.procedure || field(data.procedure, 150, true), chemical: field(data.chemical, 20, true),
         details: field(data.details, 1200), reaction: field(data.reaction, 1200), notes: field(data.notes, 1200)
       };
       if (!/^(55)?\d{10,11}$/.test(customer.phone) || !['Sim','Não','Não sei'].includes(customer.chemical)) {
         throw fail(400, 'Confira o telefone com DDD e a resposta sobre química.');
       }
-      const saved = run('UPDATE forms SET customer=?, submitted=?, notification=? WHERE id=? AND submitted IS NULL',
-        JSON.stringify(customer), Date.now(), 'em_envio', form.id);
-      if (!saved.changes) return json({ number: number(form.id), notification: 'em_envio' });
+      const submitted = Date.now();
+      const saved = await call('submit', { id: form.id, customer, submitted }, () => run(
+        'UPDATE forms SET customer=?, submitted=?, notification=? WHERE id=? AND submitted IS NULL',
+        JSON.stringify(customer), submitted, 'em_envio', form.id).changes > 0);
+      if (!saved) return json({ number: number(form.id), notification: 'em_envio' });
       const status = await notify(number(form.id));
-      run('UPDATE forms SET notification=? WHERE id=?', status, form.id);
+      await call('notify', { id: form.id, status }, () => run('UPDATE forms SET notification=? WHERE id=?', status, form.id));
       return json({ number: number(form.id), notification: status }, 201);
     }
   }
 
   const verification = url.match(/^\/api\/validar\/([\w-]{32})$/);
   if (method === 'GET' && verification) {
-    const doc = get('SELECT form_id, issued, digest, replaced FROM documents WHERE code=?', verification[1]);
+    const doc = await call('verification', { digest: hash(verification[1]) }, () => get('SELECT form_id, issued, digest, replaced FROM documents WHERE code=?', verification[1]));
     if (!doc) throw fail(404, 'Documento não encontrado.');
     return json({ number: number(doc.form_id), issued: doc.issued, digest: doc.digest, replaced: Boolean(doc.replaced) });
   }
 
   if (!url.startsWith('/api/')) throw fail(404, 'Página não encontrada.');
-  if (!session || !get('SELECT 1 FROM sessions WHERE id=? AND expires>?', hash(session), Date.now())) throw fail(401, 'Entre para acessar o painel.');
+  if (!session || !await call('session_active', { id: hash(session) }, () => get('SELECT 1 FROM sessions WHERE id=? AND expires>?', hash(session), Date.now()))) throw fail(401, 'Entre para acessar o painel.');
   if (method === 'GET' && url === '/api/drive') {
-    const connection = get('SELECT root FROM drive_connections WHERE active=1');
+    const connection = await call('drive_active', {}, () => get('SELECT root FROM drive_connections WHERE active=1'));
     return json({ configured: drive.configured, connected: Boolean(connection),
       folder: connection ? 'https://drive.google.com/drive/folders/' + encodeURIComponent(connection.root) : null });
   }
@@ -215,34 +237,32 @@ async function route(req, res) {
     const state = token();
     const verifier = randomBytes(48).toString('base64url');
     const challenge = createHash('sha256').update(verifier).digest('base64url');
-    run('DELETE FROM drive_states WHERE expires<? OR session=?', Date.now(), hash(session));
-    run('INSERT INTO drive_states VALUES (?,?,?,?)', hash(state), hash(session), verifier, Date.now() + 600_000);
+    const expires = Date.now() + 600_000;
+    await call('state_create', { state: hash(state), session: hash(session), verifier, expires }, () => {
+      run('DELETE FROM drive_states WHERE expires<? OR session=?', Date.now(), hash(session));
+      run('INSERT INTO drive_states VALUES (?,?,?,?)', hash(state), hash(session), verifier, expires);
+    });
     return json({ url: drive.authorization(state, challenge) });
   }
   if (method === 'GET' && url === '/api/drive/callback') {
     const params = new URL(req.url, publicUrl).searchParams;
-    const pending = get('SELECT verifier FROM drive_states WHERE state=? AND session=? AND expires>?',
-      hash(params.get('state') || ''), hash(session), Date.now());
-    if (!pending || !run('DELETE FROM drive_states WHERE state=?', hash(params.get('state'))).changes) {
-      throw fail(403, 'A solicitação expirou. Conecte novamente pelo painel.');
-    }
+    const state = hash(params.get('state') || '');
+    const pending = await call('state_take', { state, session: hash(session) }, () =>
+      get('DELETE FROM drive_states WHERE state=? AND session=? AND expires>? RETURNING verifier',
+        state, hash(session), Date.now()));
+    if (!pending) throw fail(403, 'A solicitação expirou. Conecte novamente pelo painel.');
     const code = params.get('code');
     let outcome = 'cancelado';
     if (code && drive.configured) {
       try {
         const connection = await drive.connect(code, pending.verifier,
-          account => get('SELECT root FROM drive_connections WHERE account=?', account));
-        db.exec('BEGIN IMMEDIATE');
-        try {
+          account => call('drive_account', { account }, () => get('SELECT root FROM drive_connections WHERE account=?', account)));
+        await call('drive_connect', { ...connection, refresh: connection.refresh.toString('hex'), salon }, () => transaction(() => {
           run('UPDATE drive_connections SET active=0 WHERE active=1');
           run(`INSERT INTO drive_connections VALUES (?,?,?,1)
             ON CONFLICT(account) DO UPDATE SET root=excluded.root, refresh=excluded.refresh, active=1`,
           connection.account, connection.root, connection.refresh);
-          db.exec('COMMIT');
-        } catch (error) {
-          db.exec('ROLLBACK');
-          throw error;
-        }
+        }));
         outcome = 'conectado';
       } catch {
         outcome = 'erro';
@@ -252,7 +272,7 @@ async function route(req, res) {
     return res.end();
   }
   if (method === 'POST' && url === '/api/logout') {
-    run('DELETE FROM sessions WHERE id=?', hash(session));
+    await call('session_delete', { id: hash(session) }, () => run('DELETE FROM sessions WHERE id=?', hash(session)));
     res.setHeader('Set-Cookie', `fp=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`);
     return json({});
   }
@@ -261,7 +281,7 @@ async function route(req, res) {
     const name = field(data.name, 120, true);
     const phone = field(data.phone, 25, true).replace(/\D/g, '').replace(/^55(?=\d{10,11}$)/, '');
     if (!/^\d{10,11}$/.test(phone)) throw fail(400, 'Informe o WhatsApp com DDD.');
-    if (!run('INSERT OR IGNORE INTO clients VALUES (?,?)', phone, name).changes) {
+    if (!await call('client_create', { phone, name, salon }, () => run('INSERT OR IGNORE INTO clients VALUES (?,?)', phone, name).changes > 0)) {
       throw fail(409, 'Já existe uma cliente com esse telefone.');
     }
     return json({ name, phone }, 201);
@@ -271,21 +291,20 @@ async function route(req, res) {
     const link = token();
     const procedure = field(data.procedure ?? '', 150);
     const phone = field(data.phone ?? '', 25);
-    if (phone && !get('SELECT 1 FROM clients WHERE phone=?', phone)) throw fail(404, 'Cliente não encontrada.');
-    db.exec('BEGIN');
-    try {
-      const result = run('INSERT INTO forms(link,expires) VALUES (?,?)', hash(link), Date.now() + 7 * 86_400_000);
+    const digest = hash(link);
+    const expires = Date.now() + 7 * 86_400_000;
+    const id = await call('invite_create', { digest, expires, phone, procedure, salon }, () => transaction(() => {
+      if (phone && !get('SELECT 1 FROM clients WHERE phone=?', phone)) throw fail(404, 'Cliente não encontrada.');
+      const result = run('INSERT INTO forms(link,expires) VALUES (?,?)', digest, expires);
       run('INSERT INTO invitations VALUES (?,?,?)', result.lastInsertRowid, phone || null, procedure);
-      db.exec('COMMIT');
-      return json({ number: number(result.lastInsertRowid), link: new URL('/pre/' + link, publicUrl).href }, 201);
-    } catch (error) {
-      db.exec('ROLLBACK');
-      throw error;
-    }
+      return result.lastInsertRowid;
+    }));
+    return json({ number: number(id), link: new URL('/pre/' + link, publicUrl).href }, 201);
   }
   if (method === 'GET' && url === '/api/forms') {
+    const dashboard = await call('dashboard', {}, () => {
     const forms = all('SELECT id,customer,submitted,notification FROM forms WHERE submitted IS NOT NULL ORDER BY id DESC');
-    return json({ salon, clients: all('SELECT name,phone FROM clients ORDER BY name'),
+    return { clients: all('SELECT name,phone FROM clients ORDER BY name'),
       pending: all(`SELECT forms.id, clients.name, invitations.procedure, forms.expires
         FROM forms LEFT JOIN invitations ON invitations.form_id=forms.id
         LEFT JOIN clients ON clients.phone=invitations.phone
@@ -296,11 +315,16 @@ async function route(req, res) {
       documents: all(`SELECT documents.code, documents.form_id, documents.issued, documents.replaced, forms.customer
         FROM documents JOIN forms ON forms.id=documents.form_id ORDER BY documents.issued DESC`)
         .map(row => ({ code: row.code, id: row.form_id, number: number(row.form_id),
-          issued: row.issued, replaced: Boolean(row.replaced), name: JSON.parse(row.customer).name })) });
+          issued: row.issued, replaced: Boolean(row.replaced), name: JSON.parse(row.customer).name })) };
+    });
+    for (const collection of [dashboard.forms, dashboard.pending, dashboard.documents]) {
+      for (const row of collection) row.number = number(row.id);
+    }
+    return json({ salon, ...dashboard });
   }
   const download = url.match(/^\/api\/documents\/([\w-]{32})\/pdf$/);
   if (method === 'GET' && download) {
-    const doc = get('SELECT code,form_id,pdf,digest FROM documents WHERE code=?', download[1]);
+    const doc = await call('document', { code: download[1] }, () => get('SELECT code,form_id,pdf,digest FROM documents WHERE code=?', download[1]));
     if (!doc) throw fail(404, 'Documento não encontrado.');
     const bytes = await documentBytes(doc);
     res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="${number(doc.form_id)}.pdf"` });
@@ -310,11 +334,11 @@ async function route(req, res) {
   if (formRoute) {
     const id = Number(formRoute[1]);
     const action = formRoute[2];
-    const row = get('SELECT * FROM forms WHERE id=? AND submitted IS NOT NULL', id);
+    const row = await call('form', { id }, () => get('SELECT * FROM forms WHERE id=? AND submitted IS NOT NULL', id));
     if (!row) throw fail(404, 'Ficha não encontrada.');
-    const doc = get('SELECT * FROM documents WHERE form_id=? AND replaced IS NULL', id);
-    const customer = JSON.parse(row.customer);
-    if (method === 'GET' && !action) return json({ number: number(id), customer, assessment: JSON.parse(row.assessment || '{}'), issued: Boolean(doc), version: doc?.code ?? null });
+    const doc = await call('active_document', { id }, () => get('SELECT * FROM documents WHERE form_id=? AND replaced IS NULL', id));
+    const customer = remote ? row.customer : JSON.parse(row.customer);
+    if (method === 'GET' && !action) return json({ number: number(id), customer, assessment: remote ? row.assessment || {} : JSON.parse(row.assessment || '{}'), issued: Boolean(doc), version: doc?.code ?? null });
     if (method === 'GET' && action === 'pdf') {
       if (!doc) throw fail(404, 'PDF ainda não emitido.');
       const bytes = await documentBytes(doc);
@@ -326,7 +350,7 @@ async function route(req, res) {
       const assessment = Object.fromEntries(['Couro cabeludo','Condição dos fios','Teste de mecha','Produtos e fórmula','Orientações'].map(label =>
         [label, field(data.assessment?.[label], 1400, label === 'Condição dos fios' && action === 'emitir')]));
       if (!action) {
-        run('UPDATE forms SET assessment=? WHERE id=?', JSON.stringify(assessment), id);
+        await call('assessment', { id, assessment }, () => run('UPDATE forms SET assessment=? WHERE id=?', JSON.stringify(assessment), id));
         return json({ saved: true });
       }
       if (data.version !== (doc?.code ?? null)) throw fail(409, 'A ficha foi emitida em outra tela. Reabra para continuar.');
@@ -344,27 +368,29 @@ async function route(req, res) {
       } catch {
         throw fail(422, 'Não foi possível ler a assinatura ou as fotos. Revise os arquivos.');
       }
-      const connection = get('SELECT * FROM drive_connections WHERE active=1');
-      if (drive.configured && !connection) throw fail(409, 'Conecte o Drive do salão antes de emitir o PDF.');
+      const connection = await call('drive_active', {}, () => get('SELECT * FROM drive_connections WHERE active=1'));
+      if ((drive.configured || remote) && !connection) throw fail(409, 'Conecte o Drive do salão antes de emitir o PDF.');
       const stored = connection ? await drive.store(connection, number(id) + '-' + code.slice(0, 8), [
         { name: number(id) + '.pdf', type: 'application/pdf', bytes: pdf },
         ...photos.map(photo => ({ name: photo.label.toLowerCase() + '.jpg', type: 'image/jpeg',
           bytes: Buffer.from(photo.image.split(',')[1], 'base64') }))
       ]) : null;
+      const pdfDigest = hash(pdf);
+      const photoIds = stored ? Object.fromEntries(photos.map((photo, i) => [photo.label, stored.ids[i + 1]])) : {};
       try {
-        db.exec('BEGIN IMMEDIATE');
-        if ((get('SELECT code FROM documents WHERE form_id=? AND replaced IS NULL', id)?.code ?? null) !== data.version) {
-          throw fail(409, 'A ficha já tem uma versão mais recente.');
-        }
-        run('UPDATE documents SET replaced=? WHERE form_id=? AND replaced IS NULL', issued, id);
-        run('INSERT INTO documents VALUES (?,?,?,?,?,NULL)', code, id, issued, hash(pdf), stored ? Buffer.alloc(0) : pdf);
-        if (stored) run('INSERT INTO drive_documents VALUES (?,?,?,?)', code, connection.account, stored.ids[0],
-          JSON.stringify(Object.fromEntries(photos.map((photo, i) => [photo.label, stored.ids[i + 1]]))));
-        run('UPDATE forms SET assessment=? WHERE id=?', JSON.stringify(assessment), id);
-        db.exec('COMMIT');
+        await call('issue', { id, code, verification: hash(code), issued, digest: pdfDigest, version: data.version,
+          assessment, connection: connection?.id, pdf: stored?.ids[0], photos: photoIds }, () => transaction(() => {
+          if ((get('SELECT code FROM documents WHERE form_id=? AND replaced IS NULL', id)?.code ?? null) !== data.version) {
+            throw fail(409, 'A ficha já tem uma versão mais recente.');
+          }
+          run('UPDATE documents SET replaced=? WHERE form_id=? AND replaced IS NULL', issued, id);
+          run('INSERT INTO documents VALUES (?,?,?,?,?,NULL)', code, id, issued, pdfDigest, stored ? Buffer.alloc(0) : pdf);
+          if (stored) run('INSERT INTO drive_documents VALUES (?,?,?,?)', code, connection.account, stored.ids[0], JSON.stringify(photoIds));
+          run('UPDATE forms SET assessment=? WHERE id=?', JSON.stringify(assessment), id);
+        }));
       } catch (error) {
-        if (db.isTransaction) db.exec('ROLLBACK');
-        if (stored) await stored.discard().catch(() => {});
+        // Se a confirmação remota se perdeu, preservar os arquivos evita invalidar um PDF já emitido.
+        if (stored && (!remote || error.definitive)) await stored.discard().catch(() => {});
         throw error;
       }
       return json({ number: number(id), verification: '/validar/' + code }, 201);
